@@ -16,6 +16,8 @@ export class Oauth extends Schema.Class<Oauth>("OAuth")({
   access: Schema.String,
   expires: Schema.Number,
   accountId: Schema.optional(Schema.String),
+  githubToken: Schema.optional(Schema.String),
+  githubScopes: Schema.optional(Schema.Array(Schema.String)),
   enterpriseUrl: Schema.optional(Schema.String),
 }) {}
 
@@ -56,14 +58,15 @@ export const layer = Layer.effect(
     const decode = Schema.decodeUnknownOption(Info)
 
     const all = Effect.fn("Auth.all")(function* () {
+      let envData: Record<string, unknown> = {}
       if (process.env.OPENCODE_AUTH_CONTENT) {
         try {
-          return JSON.parse(process.env.OPENCODE_AUTH_CONTENT)
+          envData = JSON.parse(process.env.OPENCODE_AUTH_CONTENT)
         } catch (err) {}
       }
 
       const data = (yield* fsys.readJson(file).pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>
-      return Record.filterMap(data, (value) => Result.fromOption(decode(value), () => undefined))
+      return Record.filterMap({ ...envData, ...data }, (value) => Result.fromOption(decode(value), () => undefined))
     })
 
     const get = Effect.fn("Auth.get")(function* (providerID: string) {

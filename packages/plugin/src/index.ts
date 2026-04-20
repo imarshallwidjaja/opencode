@@ -175,6 +175,8 @@ export type AuthOAuthResult = { url: string; instructions: string } & (
                 access: string
                 expires: number
                 accountId?: string
+                githubToken?: string
+                githubScopes?: string[]
                 enterpriseUrl?: string
               }
             | { key: string }
@@ -196,6 +198,8 @@ export type AuthOAuthResult = { url: string; instructions: string } & (
                 access: string
                 expires: number
                 accountId?: string
+                githubToken?: string
+                githubScopes?: string[]
                 enterpriseUrl?: string
               }
             | { key: string }
