@@ -83,4 +83,35 @@ describe("Auth", () => {
       }),
     ),
   )
+
+  it.live("prefers live auth file entries over OPENCODE_AUTH_CONTENT snapshots", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const previous = process.env.OPENCODE_AUTH_CONTENT
+        process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+          anthropic: {
+            type: "api",
+            key: "stale-key",
+          },
+        })
+
+        try {
+          const auth = yield* Auth.Service
+          yield* auth.set("anthropic", {
+            type: "api",
+            key: "fresh-key",
+          })
+
+          const data = yield* auth.all()
+          expect(data["anthropic"]).toEqual({
+            type: "api",
+            key: "fresh-key",
+          })
+        } finally {
+          if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+          else process.env.OPENCODE_AUTH_CONTENT = previous
+        }
+      }),
+    ),
+  )
 })

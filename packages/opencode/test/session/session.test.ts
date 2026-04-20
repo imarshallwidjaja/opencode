@@ -6,6 +6,7 @@ import { Log } from "../../src/util"
 import { Instance } from "../../src/project/instance"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
+import { ModelID } from "../../src/provider/schema"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { tmpdir } from "../fixture/fixture"
 
@@ -22,6 +23,10 @@ function get(id: SessionID) {
 
 function remove(id: SessionID) {
   return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.remove(id)))
+}
+
+function messages(sessionID: SessionID) {
+  return AppRuntime.runPromise(SessionNs.Service.use((svc) => svc.messages({ sessionID })))
 }
 
 function updateMessage<T extends MessageV2.Info>(msg: T) {
@@ -177,5 +182,84 @@ describe("Session", () => {
     })
 
     expect(missing).toBe(true)
+  })
+
+  test("updateMessage snapshots the stored message payload", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const info = await create({ title: "message-snapshot" })
+        const assistant: MessageV2.Assistant = {
+          id: MessageID.ascending(),
+          role: "assistant",
+          sessionID: info.id,
+          parentID: MessageID.ascending(),
+          modelID: "auto" as never,
+          providerID: "github-copilot" as never,
+          mode: "build",
+          agent: "build",
+          path: { cwd: tmp.path, root: tmp.path },
+          cost: 0,
+          tokens: { total: 0, input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: Date.now() },
+        }
+
+        await updateMessage(assistant)
+        assistant.modelID = "claude-haiku-4.5" as never
+
+        await new Promise((resolve) => setTimeout(resolve, 100))
+
+        const stored = await messages(info.id)
+        const found = stored.find((item) => item.info.id === assistant.id)
+
+        expect(found?.info.role).toBe("assistant")
+        if (!found || found.info.role !== "assistant") return
+        expect(found.info.modelID).toBe(ModelID.make("auto"))
+
+        await remove(info.id)
+      },
+    })
+  })
+
+  test("updateMessage does not let stale auto overwrite a resolved assistant model", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const info = await create({ title: "preserve-resolved-auto-model" })
+        const assistantID = MessageID.ascending()
+        const base: Omit<MessageV2.Assistant, "modelID"> = {
+          id: assistantID,
+          role: "assistant",
+          sessionID: info.id,
+          parentID: MessageID.ascending(),
+          providerID: "github-copilot" as never,
+          mode: "build",
+          agent: "build",
+          path: { cwd: tmp.path, root: tmp.path },
+          cost: 0,
+          tokens: { total: 0, input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: Date.now() },
+        }
+
+        await updateMessage({ ...base, modelID: "auto" as never })
+        await updateMessage({ ...base, modelID: "claude-haiku-4.5" as never })
+        await updateMessage({ ...base, modelID: "auto" as never })
+
+        await new Promise((resolve) => setTimeout(resolve, 100))
+
+        const stored = await messages(info.id)
+        const found = stored.find((item) => item.info.id === assistantID)
+
+        expect(found?.info.role).toBe("assistant")
+        if (!found || found.info.role !== "assistant") return
+        expect(found.info.modelID).toBe(ModelID.make("claude-haiku-4.5"))
+
+        await remove(info.id)
+      },
+    })
   })
 })

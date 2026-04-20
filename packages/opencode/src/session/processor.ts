@@ -20,6 +20,7 @@ import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { Log } from "@/util"
 import { isRecord } from "@/util/record"
+import { ModelID } from "@/provider/schema"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
@@ -213,7 +214,19 @@ export const layer: Layer.Layer<
         return true
       })
 
+      const syncResolvedModel = Effect.fn("SessionProcessor.syncResolvedModel")(function* (providerMetadata: unknown) {
+        if (!isRecord(providerMetadata)) return
+        const opencode = providerMetadata.opencode
+        if (!isRecord(opencode) || typeof opencode.modelId !== "string") return
+        if (ctx.assistantMessage.modelID === opencode.modelId) return
+        ctx.assistantMessage.modelID = ModelID.make(opencode.modelId)
+      })
+
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
+        if (isRecord(value) && "providerMetadata" in value) {
+          yield* syncResolvedModel(value.providerMetadata)
+        }
+
         switch (value.type) {
           case "start":
             yield* status.set(ctx.sessionID, { type: "busy" })

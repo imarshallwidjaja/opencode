@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { expect } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
 import { Agent as AgentSvc } from "../../src/agent/agent"
@@ -20,7 +20,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Snapshot } from "../../src/snapshot"
 import { Log } from "../../src/util"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
-import { provideTmpdirServer } from "../fixture/fixture"
+import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 
@@ -173,6 +173,95 @@ const env = Layer.mergeAll(
 
 const it = testEffect(env)
 
+const depsWithoutLLM = Layer.mergeAll(
+  Session.defaultLayer,
+  Snapshot.defaultLayer,
+  AgentSvc.defaultLayer,
+  Permission.defaultLayer,
+  Plugin.defaultLayer,
+  Config.defaultLayer,
+  Provider.defaultLayer,
+  status,
+).pipe(Layer.provideMerge(infra))
+
+const resolvedModelLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        { type: "start" },
+        {
+          type: "finish-step",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            totalTokens: 3,
+          },
+          providerMetadata: {
+            opencode: {
+              modelId: "resolved-model",
+            },
+          },
+        },
+        { type: "finish" },
+      ] as never),
+  }),
+)
+
+const itResolvedModel = testEffect(
+  SessionProcessor.layer.pipe(
+    Layer.provide(summary),
+    Layer.provideMerge(depsWithoutLLM),
+    Layer.provideMerge(resolvedModelLLM),
+  ),
+)
+
+const resolvedModelLateLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.fromIterable([
+        { type: "start" },
+        {
+          type: "text-start",
+          id: "txt-0",
+        },
+        {
+          type: "text-delta",
+          id: "txt-0",
+          text: "hello",
+        },
+        {
+          type: "text-end",
+          id: "txt-0",
+        },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            totalTokens: 3,
+          },
+          providerMetadata: {
+            opencode: {
+              modelId: "resolved-late-model",
+            },
+          },
+        },
+      ] as never),
+  }),
+)
+
+const itResolvedModelLate = testEffect(
+  SessionProcessor.layer.pipe(
+    Layer.provide(summary),
+    Layer.provideMerge(depsWithoutLLM),
+    Layer.provideMerge(resolvedModelLateLLM),
+  ),
+)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -228,6 +317,156 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
       }),
     { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+itResolvedModel.live("session.processor effect tests replace auto model id with the resolved model", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const processors = yield* SessionProcessor.Service
+        const session = yield* Session.Service
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        msg.modelID = ModelID.make("auto")
+        yield* session.updateMessage(msg)
+
+        const mdl = {
+          id: ref.modelID,
+          providerID: ref.providerID,
+          name: "Test Model",
+          api: {
+            id: "test-model",
+            url: "http://localhost:1/v1",
+            npm: "@ai-sdk/openai-compatible",
+          },
+          type: "chat",
+          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+          limit: { context: 100000, output: 10000 },
+          options: {},
+          headers: {},
+          family: "test",
+          release_date: "2025-01-01",
+          variants: {},
+          capabilities: {
+            temperature: false,
+            reasoning: false,
+            attachment: false,
+            toolcall: true,
+            input: { text: true, audio: false, image: false, video: false, pdf: false },
+            output: { text: true, audio: false, image: false, video: false, pdf: false },
+            interleaved: false,
+          },
+        } as never
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+
+        const messages = yield* session.messages({ sessionID: chat.id })
+        const updated = messages.find((item) => item.info.id === msg.id)
+
+        expect(value).toBe("continue")
+        expect(updated?.info.role).toBe("assistant")
+        if (!updated || updated.info.role !== "assistant") return
+        expect(updated.info.modelID).toBe(ModelID.make("resolved-model"))
+      }),
+    { git: true, config: cfg },
+  ),
+)
+
+itResolvedModelLate.live("session.processor effect tests sync resolved model id from late provider metadata", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const processors = yield* SessionProcessor.Service
+        const session = yield* Session.Service
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        msg.modelID = ModelID.make("auto")
+        yield* session.updateMessage(msg)
+
+        const mdl = {
+          id: ref.modelID,
+          providerID: ref.providerID,
+          name: "Test Model",
+          api: {
+            id: "test-model",
+            url: "http://localhost:1/v1",
+            npm: "@ai-sdk/openai-compatible",
+          },
+          type: "chat",
+          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+          limit: { context: 100000, output: 10000 },
+          options: {},
+          headers: {},
+          family: "test",
+          release_date: "2025-01-01",
+          variants: {},
+          capabilities: {
+            temperature: false,
+            reasoning: false,
+            attachment: false,
+            toolcall: true,
+            input: { text: true, audio: false, image: false, video: false, pdf: false },
+            output: { text: true, audio: false, image: false, video: false, pdf: false },
+            interleaved: false,
+          },
+        } as never
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+
+        const messages = yield* session.messages({ sessionID: chat.id })
+        const updated = messages.find((item) => item.info.id === msg.id)
+
+        expect(value).toBe("continue")
+        expect(updated?.info.role).toBe("assistant")
+        if (!updated || updated.info.role !== "assistant") return
+        expect(updated.info.modelID).toBe(ModelID.make("resolved-late-model"))
+      }),
+    { git: true, config: cfg },
   ),
 )
 
