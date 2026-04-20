@@ -20,6 +20,7 @@ import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { Log } from "@/util"
 import { isRecord } from "@/util/record"
+import { ModelID } from "@/provider/schema"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
@@ -71,6 +72,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: MessageV2.TextPart | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  resolvedModelSynced: string | undefined
 }
 
 type StreamEvent = Event
@@ -121,6 +123,7 @@ export const layer: Layer.Layer<
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        resolvedModelSynced: undefined,
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -213,7 +216,25 @@ export const layer: Layer.Layer<
         return true
       })
 
+      const syncResolvedModel = Effect.fn("SessionProcessor.syncResolvedModel")(function* (providerMetadata: unknown) {
+        if (!isRecord(providerMetadata)) return
+        const opencode = providerMetadata.opencode
+        if (!isRecord(opencode) || typeof opencode.modelId !== "string") return
+        const next = ModelID.make(opencode.modelId)
+        if (ctx.assistantMessage.modelID === next && ctx.resolvedModelSynced === opencode.modelId) return
+        if (ctx.assistantMessage.modelID !== next) {
+          ctx.assistantMessage.modelID = next
+        }
+        if (ctx.resolvedModelSynced === opencode.modelId) return
+        ctx.resolvedModelSynced = opencode.modelId
+        yield* session.updateMessage(ctx.assistantMessage)
+      })
+
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
+        if (isRecord(value) && "providerMetadata" in value) {
+          yield* syncResolvedModel(value.providerMetadata)
+        }
+
         switch (value.type) {
           case "start":
             yield* status.set(ctx.sessionID, { type: "busy" })

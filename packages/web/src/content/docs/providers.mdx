@@ -944,6 +944,14 @@ subscription](https://github.com/features/copilot/plans) to use.
    /models
    ```
 
+To restrict Copilot Auto to specific model IDs, set `COPILOT_AUTO_MODEL_ALLOWLIST` before starting opencode:
+
+```bash
+COPILOT_AUTO_MODEL_ALLOWLIST=claude-opus-4.7,gpt-5.4,gpt-5.5 opencode
+```
+
+The value is comma-separated. Whitespace is ignored and duplicate IDs are removed. Auto sends only models that are advertised by the Copilot session, supported by opencode's Copilot provider, and present in the allowlist. If none match, Auto fails before asking Copilot's intent router to choose a model.
+
 ---
 
 ### Google Vertex AI

@@ -25,6 +25,8 @@ import { InstanceState } from "@/effect"
 import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { isRecord } from "@/util/record"
 import { withStatics } from "@/util/schema"
+import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/copilot"
+import { createCopilotAutoModel } from "./sdk/copilot/auto-model"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
@@ -191,7 +193,38 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
     "github-copilot": () =>
       Effect.succeed({
         autoload: false,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
+          if (modelID === "auto") {
+            const baseURL = options?.baseURL ?? "https://api.githubcopilot.com"
+            return createCopilotAutoModel({
+              baseURL,
+              fetch: options?.fetch ?? fetch,
+              headers: () => {
+                const h: Record<string, string> = {}
+                if (options?.apiKey) h["Authorization"] = `Bearer ${options.apiKey}`
+                return h
+              },
+              executableModelIds: Array.isArray(options?.executableModelIds)
+                ? options.executableModelIds.filter(
+                    (modelId: unknown): modelId is string => typeof modelId === "string",
+                  )
+                : undefined,
+              createModel(resolvedModelId: string, extraHeaders?: Record<string, string>) {
+                // Rebuild the SDK with extra headers (Copilot-Session-Token) merged in
+                const sdkWithHeaders = extraHeaders
+                  ? createGitHubCopilotOpenAICompatible({
+                      baseURL,
+                      ...options,
+                      headers: { ...options?.headers, ...extraHeaders },
+                    })
+                  : sdk
+                if (useLanguageModel(sdkWithHeaders)) return sdkWithHeaders.languageModel(resolvedModelId)
+                return shouldUseCopilotResponsesApi(resolvedModelId)
+                  ? sdkWithHeaders.responses(resolvedModelId)
+                  : sdkWithHeaders.chat(resolvedModelId)
+              },
+            })
+          }
           if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
           return shouldUseCopilotResponsesApi(modelID) ? sdk.responses(modelID) : sdk.chat(modelID)
         },
@@ -1695,6 +1728,7 @@ const priority = ["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"]
 export function sort<T extends { id: string }>(models: T[]) {
   return sortBy(
     models,
+    [(model) => (model.id === "auto" ? 0 : 1), "asc"],
     [(model) => priority.findIndex((filter) => model.id.includes(filter)), "desc"],
     [(model) => (model.id.includes("latest") ? 0 : 1), "asc"],
     [(model) => model.id, "desc"],

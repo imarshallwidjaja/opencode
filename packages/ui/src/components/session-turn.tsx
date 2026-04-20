@@ -25,6 +25,7 @@ import { TextReveal } from "./text-reveal"
 import { createAutoScroll } from "../hooks"
 import { useI18n } from "../context/i18n"
 import { normalize } from "./session-diff"
+import { resolvedUserModel } from "./session-turn-model"
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -283,6 +284,15 @@ export function SessionTurn(
     { equals: same },
   )
 
+  const modelOverride = createMemo(() => {
+    const resolved = resolvedUserModel(message(), assistantMessages())
+    if (!resolved) return
+    return {
+      providerID: resolved.providerID,
+      modelID: resolved.modelID,
+    }
+  })
+
   const interrupted = createMemo(() => assistantMessages().some((m) => m.error?.name === "MessageAbortedError"))
   const divider = createMemo(() => {
     if (compaction()) return i18n.t("ui.messagePart.compaction")
@@ -393,7 +403,7 @@ export function SessionTurn(
               class={props.classes?.container}
             >
               <div data-slot="session-turn-message-content" aria-live="off">
-                <Message message={message()!} parts={parts()} actions={props.actions} />
+                <Message message={message()!} parts={parts()} actions={props.actions} modelOverride={modelOverride()} />
               </div>
               <Show when={divider()}>
                 <div data-slot="session-turn-compaction">

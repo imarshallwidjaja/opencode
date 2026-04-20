@@ -4,6 +4,7 @@ import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
 import { Log } from "../util"
+import { isRecord } from "@/util/record"
 
 const log = Log.create({ service: "session.projector" })
 
@@ -83,6 +84,19 @@ export default [
   SyncEvent.project(MessageV2.Event.Updated, (db, data) => {
     const time_created = data.info.time.created
     const { id, sessionID, ...rest } = data.info
+    const existing = db.select({ data: MessageTable.data }).from(MessageTable).where(eq(MessageTable.id, id)).get()
+    const existingData: unknown = existing?.data
+    const existingRole = isRecord(existingData) && typeof existingData.role === "string" ? existingData.role : undefined
+    const existingModelID =
+      isRecord(existingData) && typeof existingData.modelID === "string" ? existingData.modelID : undefined
+    const next =
+      rest.role === "assistant" &&
+      rest.modelID === "auto" &&
+      existingRole === "assistant" &&
+      typeof existingModelID === "string" &&
+      existingModelID !== "auto"
+        ? { ...rest, modelID: existingModelID }
+        : rest
 
     try {
       db.insert(MessageTable)
@@ -90,9 +104,9 @@ export default [
           id,
           session_id: sessionID,
           time_created,
-          data: rest,
+          data: next,
         })
-        .onConflictDoUpdate({ target: MessageTable.id, set: { data: rest } })
+        .onConflictDoUpdate({ target: MessageTable.id, set: { data: next } })
         .run()
     } catch (err) {
       if (!foreign(err)) throw err

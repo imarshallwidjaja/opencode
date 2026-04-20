@@ -17,36 +17,69 @@ export const schema = z.object({
         .optional(),
       capabilities: z.object({
         family: z.string(),
-        limits: z.object({
-          max_context_window_tokens: z.number(),
-          max_output_tokens: z.number(),
-          max_prompt_tokens: z.number(),
-          vision: z
-            .object({
-              max_prompt_image_size: z.number(),
-              max_prompt_images: z.number(),
-              supported_media_types: z.array(z.string()),
-            })
-            .optional(),
-        }),
-        supports: z.object({
-          adaptive_thinking: z.boolean().optional(),
-          max_thinking_budget: z.number().optional(),
-          min_thinking_budget: z.number().optional(),
-          reasoning_effort: z.array(z.string()).optional(),
-          streaming: z.boolean(),
-          structured_outputs: z.boolean().optional(),
-          tool_calls: z.boolean(),
-          vision: z.boolean().optional(),
-        }),
+        type: z.string().optional(),
+        limits: z
+          .object({
+            max_context_window_tokens: z.number().optional(),
+            max_output_tokens: z.number().optional(),
+            max_prompt_tokens: z.number().optional(),
+            max_inputs: z.number().optional(),
+            vision: z
+              .object({
+                max_prompt_image_size: z.number(),
+                max_prompt_images: z.number(),
+                supported_media_types: z.array(z.string()),
+              })
+              .optional(),
+          })
+          .optional(),
+        supports: z
+          .object({
+            adaptive_thinking: z.boolean().optional(),
+            dimensions: z.boolean().optional(),
+            max_thinking_budget: z.number().optional(),
+            min_thinking_budget: z.number().optional(),
+            reasoning_effort: z.array(z.string()).optional(),
+            streaming: z.boolean().optional(),
+            structured_outputs: z.boolean().optional(),
+            tool_calls: z.boolean().optional(),
+            vision: z.boolean().optional(),
+          })
+          .optional(),
       }),
     }),
   ),
 })
 
 type Item = z.infer<typeof schema>["data"][number]
+type BuildableItem = Item & {
+  capabilities: Item["capabilities"] & {
+    limits: NonNullable<Item["capabilities"]["limits"]> & {
+      max_context_window_tokens: number
+      max_output_tokens: number
+      max_prompt_tokens: number
+    }
+    supports: NonNullable<Item["capabilities"]["supports"]> & {
+      streaming: boolean
+      tool_calls: boolean
+    }
+  }
+}
 
-function build(key: string, remote: Item, url: string, prev?: Model): Model {
+function isBuildable(remote: Item): remote is BuildableItem {
+  if (remote.model_picker_enabled !== true || remote.policy?.state === "disabled") return false
+  const limits = remote.capabilities.limits
+  const supports = remote.capabilities.supports
+  return (
+    typeof limits?.max_context_window_tokens === "number" &&
+    typeof limits.max_output_tokens === "number" &&
+    typeof limits.max_prompt_tokens === "number" &&
+    typeof supports?.streaming === "boolean" &&
+    typeof supports.tool_calls === "boolean"
+  )
+}
+
+function build(key: string, remote: BuildableItem, url: string, prev?: Model): Model {
   const reasoning =
     !!remote.capabilities.supports.adaptive_thinking ||
     !!remote.capabilities.supports.reasoning_effort?.length ||
@@ -127,9 +160,7 @@ export async function get(
   })
 
   const result = { ...existing }
-  const remote = new Map(
-    data.data.filter((m) => m.model_picker_enabled && m.policy?.state !== "disabled").map((m) => [m.id, m] as const),
-  )
+  const remote = new Map(data.data.filter(isBuildable).map((m) => [m.id, m] as const))
 
   // prune existing models whose api.id isn't in the endpoint response
   for (const [key, model] of Object.entries(result)) {

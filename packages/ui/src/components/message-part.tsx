@@ -136,6 +136,10 @@ export interface MessageProps {
   actions?: UserActions
   showAssistantCopyPartID?: string | null
   showReasoningSummaries?: boolean
+  modelOverride?: {
+    providerID: string
+    modelID: string
+  }
 }
 
 export type SessionAction = (input: { sessionID: string; messageID: string }) => Promise<void> | void
@@ -802,7 +806,12 @@ export function Message(props: MessageProps) {
     <Switch>
       <Match when={props.message.role === "user" && props.message}>
         {(userMessage) => (
-          <UserMessageDisplay message={userMessage() as UserMessage} parts={props.parts} actions={props.actions} />
+          <UserMessageDisplay
+            message={userMessage() as UserMessage}
+            parts={props.parts}
+            actions={props.actions}
+            modelOverride={props.modelOverride}
+          />
         )}
       </Match>
       <Match when={props.message.role === "assistant" && props.message}>
@@ -993,7 +1002,15 @@ function ContextToolGroup(props: { parts: ToolPart[]; busy?: boolean }) {
   )
 }
 
-export function UserMessageDisplay(props: { message: UserMessage; parts: PartType[]; actions?: UserActions }) {
+export function UserMessageDisplay(props: {
+  message: UserMessage
+  parts: PartType[]
+  actions?: UserActions
+  modelOverride?: {
+    providerID: string
+    modelID: string
+  }
+}) {
   const data = useData()
   const dialog = useDialog()
   const i18n = useI18n()
@@ -1019,8 +1036,8 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
   const agents = createMemo(() => (props.parts?.filter((p) => p.type === "agent") as AgentPart[]) ?? [])
 
   const model = createMemo(() => {
-    const providerID = props.message.model?.providerID
-    const modelID = props.message.model?.modelID
+    const providerID = props.modelOverride?.providerID ?? props.message.model?.providerID
+    const modelID = props.modelOverride?.modelID ?? props.message.model?.modelID
     if (!providerID || !modelID) return ""
     const match = data.store.provider?.all?.find((p) => p.id === providerID)
     return match?.models?.[modelID]?.name ?? modelID
